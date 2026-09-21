@@ -1,6 +1,7 @@
 const crypto = require('crypto');
 const { load, save, MIN_OFFSET, MAX_OFFSET, MIN_YEAR, MAX_YEAR, MAX_NAME_LENGTH, MAX_DISPLAY_NAME_LENGTH, MAX_NOTE_LENGTH } = require('./store');
 const { ApiError, pickText } = require('./errors');
+const { validateExceptions, scheduleForYears } = require('./dst');
 
 // 时区名固定成地区加城市的写法，UTC 单独允许
 const NAME_PATTERN = /^([A-Za-z_]+(\/[A-Za-z_]+)+|UTC)$/;
@@ -123,6 +124,10 @@ function validatePayload(input, data, selfId) {
     }
   }
 
+  // 年度例外的生效区间与是否实行夏令时都按本条档案最终的口径来校验
+  const effectiveFrom = fromYear === null ? MIN_YEAR : fromYear;
+  const dstExceptions = validateExceptions(input.dstExceptions, usesDst, effectiveFrom, toYear);
+
   return {
     name,
     displayName,
@@ -131,6 +136,7 @@ function validatePayload(input, data, selfId) {
     dstOffsetMinutes,
     dstStart,
     dstEnd,
+    dstExceptions,
     fromYear: fromYear === null ? MIN_YEAR : fromYear,
     toYear,
     note: validateNote(input.note),
@@ -147,8 +153,12 @@ function offsetText(minutes) {
 }
 
 function withOffsetText(zone) {
+  const exceptions = Array.isArray(zone.dstExceptions) ? zone.dstExceptions : [];
   return {
     ...zone,
+    dstExceptions: exceptions,
+    exceptionCount: exceptions.length,
+    exceptionYears: exceptions.map((item) => item.year),
     offsetText: offsetText(zone.offsetMinutes),
     dstOffsetText: zone.usesDst && zone.dstOffsetMinutes !== null ? offsetText(zone.dstOffsetMinutes) : '',
     yearRangeText: zone.toYear === null ? `${zone.fromYear} 年起` : `${zone.fromYear} 至 ${zone.toYear}`,
@@ -193,6 +203,31 @@ function getZone(id) {
   return withOffsetText(found);
 }
 
+// 切换时刻表：列出若干年内每年的开始与结束日期时刻，有年度例外的年份按例外走并标明
+function getZoneSchedule(id, options) {
+  const input = options && typeof options === 'object' ? options : {};
+  const data = load();
+  const found = data.zones.find((item) => item.id === id);
+  if (!found) throw new ApiError(404, 'ZONE_NOT_FOUND', '这条时区档案不存在或已被删除', '');
+
+  const currentYear = new Date().getFullYear();
+  let fromYear = input.fromYear === undefined || input.fromYear === '' ? currentYear - 2 : Number(input.fromYear);
+  let toYear = input.toYear === undefined || input.toYear === '' ? currentYear + 3 : Number(input.toYear);
+  if (!Number.isInteger(fromYear) || fromYear < MIN_YEAR || fromYear > MAX_YEAR) {
+    throw new ApiError(400, 'SCHEDULE_YEAR_INVALID', `开始年份要填 ${MIN_YEAR} 到 ${MAX_YEAR} 之间的整数`, 'fromYear');
+  }
+  if (!Number.isInteger(toYear) || toYear < MIN_YEAR || toYear > MAX_YEAR) {
+    throw new ApiError(400, 'SCHEDULE_YEAR_INVALID', `结束年份要填 ${MIN_YEAR} 到 ${MAX_YEAR} 之间的整数`, 'toYear');
+  }
+  if (toYear < fromYear) {
+    throw new ApiError(400, 'SCHEDULE_YEAR_INVALID', '结束年份不能早于开始年份', 'toYear');
+  }
+  if (toYear - fromYear > 100) {
+    throw new ApiError(400, 'SCHEDULE_RANGE_TOO_LARGE', '一次最多推算 101 年的时刻表', 'toYear');
+  }
+  return scheduleForYears(withOffsetText(found), fromYear, toYear);
+}
+
 function createZone(payload) {
   const input = payload && typeof payload === 'object' ? payload : {};
   const data = load();
@@ -218,6 +253,7 @@ function updateZone(id, payload) {
     dstOffsetMinutes: input.dstOffsetMinutes === undefined ? found.dstOffsetMinutes : input.dstOffsetMinutes,
     dstStart: input.dstStart === undefined ? found.dstStart : input.dstStart,
     dstEnd: input.dstEnd === undefined ? found.dstEnd : input.dstEnd,
+    dstExceptions: input.dstExceptions === undefined ? (found.dstExceptions || []) : input.dstExceptions,
     fromYear: input.fromYear === undefined ? found.fromYear : input.fromYear,
     toYear: input.toYear === undefined ? found.toYear : input.toYear,
     note: input.note === undefined ? found.note : input.note,
@@ -242,6 +278,7 @@ function deleteZone(id) {
 module.exports = {
   listZones,
   getZone,
+  getZoneSchedule,
   createZone,
   updateZone,
   deleteZone,

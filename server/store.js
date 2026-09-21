@@ -101,6 +101,56 @@ function normalizeRulePart(item) {
   return { month, week, weekday, hour, minute };
 }
 
+// 年度例外里写死的一个日期时刻点，结构不成立时返回空表示这条点不能用
+function normalizeFixedPoint(item, year) {
+  if (!item || typeof item !== 'object') return null;
+  const month = Number(item.month);
+  const day = Number(item.day);
+  const hour = Number(item.hour);
+  const minute = Number(item.minute);
+  if (!Number.isInteger(month) || month < 1 || month > 12) return null;
+  if (!Number.isInteger(day) || day < 1 || day > 31) return null;
+  if (!Number.isInteger(hour) || hour < 0 || hour > 23) return null;
+  if (!Number.isInteger(minute) || minute < 0 || minute > 59) return null;
+  // 日期要在例外那一年真的存在，顺手挡掉平年二月二十九号这类
+  const probe = new Date(Date.UTC(year, month - 1, day));
+  if (probe.getUTCFullYear() !== year || probe.getUTCMonth() !== month - 1 || probe.getUTCDate() !== day) return null;
+  return { month, day, hour, minute };
+}
+
+// 整理一批年度例外：年份越界、同年重复、结构残缺的条目直接丢弃
+function normalizeExceptions(value, usesDst) {
+  if (!usesDst || !Array.isArray(value)) return [];
+  const seen = new Set();
+  const result = [];
+  value.forEach((raw) => {
+    const item = raw && typeof raw === 'object' ? raw : {};
+    const year = Number(item.year);
+    if (!Number.isInteger(year) || year < MIN_YEAR || year > MAX_YEAR || seen.has(year)) return;
+    const disabled = item.disabled === true;
+    let start = null;
+    let end = null;
+    if (!disabled) {
+      start = normalizeFixedPoint(item.start, year);
+      end = normalizeFixedPoint(item.end, year);
+      if (!start || !end) return;
+      const startMs = Date.UTC(year, start.month - 1, start.day, start.hour, start.minute);
+      const endMs = Date.UTC(year, end.month - 1, end.day, end.hour, end.minute);
+      if (startMs >= endMs) return;
+    }
+    seen.add(year);
+    result.push({
+      year,
+      disabled,
+      start,
+      end,
+      note: typeof item.note === 'string' ? item.note : '',
+    });
+  });
+  result.sort((a, b) => a.year - b.year);
+  return result;
+}
+
 // 把单条时区档案整理成固定结构，偏移与年份越界的一律回到默认值
 function normalizeZone(item, fallbackIndex) {
   const source = item && typeof item === 'object' ? item : {};
@@ -117,6 +167,10 @@ function normalizeZone(item, fallbackIndex) {
   const toYearRaw = source.toYear === null || source.toYear === undefined || source.toYear === '' ? null : Number(source.toYear);
   const toYear = Number.isInteger(toYearRaw) && toYearRaw >= MIN_YEAR && toYearRaw <= MAX_YEAR ? toYearRaw : null;
 
+  // 落盘口径与写入校验保持一致：生效区间之外的例外不保留
+  const dstExceptions = normalizeExceptions(source.dstExceptions, usesDst)
+    .filter((item) => item.year >= fromYear && (toYear === null || item.year <= toYear));
+
   return {
     id: typeof source.id === 'string' && source.id ? source.id : `zone-restored-${fallbackIndex + 1}`,
     name: typeof source.name === 'string' ? source.name.trim() : '',
@@ -126,6 +180,7 @@ function normalizeZone(item, fallbackIndex) {
     dstOffsetMinutes,
     dstStart: usesDst ? normalizeRulePart(source.dstStart) : null,
     dstEnd: usesDst ? normalizeRulePart(source.dstEnd) : null,
+    dstExceptions,
     fromYear,
     toYear,
     note: typeof source.note === 'string' ? source.note : '',

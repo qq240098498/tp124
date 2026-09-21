@@ -50,6 +50,7 @@
               <th>夏令时</th>
               <th>夏令时偏移</th>
               <th>切换规则</th>
+              <th>年度例外</th>
               <th>生效年份</th>
               <th>备注</th>
               <th>操作</th>
@@ -87,6 +88,14 @@
           <label>时<input id="zone-end-hour" placeholder="2" maxlength="2"></label>
           <label>分<input id="zone-end-minute" placeholder="0" maxlength="2"></label>
         </div>
+        <div class="ex-box" id="zone-ex-box" data-field="dstExceptions">
+          <div class="ex-head">
+            <span class="rule-label">年度例外</span>
+            <span class="ex-hint">给某一年单独停行，或把开始、结束改成指定的日期时刻；年份要在生效区间内，每年只能一条</span>
+            <button type="button" class="ghost" id="zone-ex-add">加一条例外</button>
+          </div>
+          <div class="ex-rows" id="zone-ex-rows"></div>
+        </div>
         <div class="form-row">
           <label data-field="fromYear">开始年份<input id="zone-from-year" placeholder="例如 1971" maxlength="4"></label>
           <label data-field="toYear">结束年份<input id="zone-to-year" placeholder="留空表示至今" maxlength="4"></label>
@@ -101,7 +110,33 @@
 
     <section class="panel">
       <div class="panel-head">
-        <h2>换算台</h2>
+        <h2>切换时刻表</h2>
+        <div class="filters">
+          <label class="inline" data-field="scheduleZone">时区<select id="schedule-zone"></select></label>
+          <label class="inline" data-field="scheduleFromYear">从哪年<input id="schedule-from-year" placeholder="例如 2024" maxlength="4"></label>
+          <label class="inline" data-field="scheduleToYear">到哪年<input id="schedule-to-year" placeholder="例如 2027" maxlength="4"></label>
+          <button type="button" id="schedule-run">推算时刻表</button>
+        </div>
+      </div>
+      <p class="convert-meta" id="schedule-meta">选一条实行夏令时的档案，给个年份范围，按年列出开始与结束的日期时刻；有年度例外的年份按例外走，并明确标出</p>
+      <div class="table-wrap">
+        <table class="grid">
+          <thead>
+            <tr>
+              <th>年份</th>
+              <th>依据</th>
+              <th>夏令时开始（当地时刻）</th>
+              <th>夏令时结束（当地时刻）</th>
+              <th>说明</th>
+            </tr>
+          </thead>
+          <tbody id="schedule-body"></tbody>
+        </table>
+      </div>
+      <p class="empty-tip hidden" id="schedule-empty">还没有推算过时刻表</p>
+    </section>
+
+    <section class="panel">
         <div class="filters">
           <label class="inline" data-field="date">日期<input id="convert-date" type="date"></label>
           <label class="inline" data-field="time">时刻<input id="convert-time" placeholder="例如 09:30" maxlength="5"></label>

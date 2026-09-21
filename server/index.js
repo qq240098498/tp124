@@ -36,6 +36,18 @@ app.get('/api/zones/:id', (req, res) => {
   }
 });
 
+// 切换时刻表：列出一条档案若干年内每年的夏令时开始与结束日期时刻，年度例外会标明
+app.get('/api/zones/:id/schedule', (req, res) => {
+  try {
+    res.json(api.getZoneSchedule(req.params.id, {
+      fromYear: api.readQuery(req.query, 'fromYear'),
+      toYear: api.readQuery(req.query, 'toYear'),
+    }));
+  } catch (err) {
+    sendError(res, err);
+  }
+});
+
 app.patch('/api/zones/:id', (req, res) => {
   try {
     res.json(api.updateZone(req.params.id, req.body));

@@ -283,6 +283,128 @@ tr.source-row td {
   color: #8a5a00;
 }
 
+.tag.ex {
+  background: #f3eefe;
+  color: #6a3fb5;
+}
+
+.tag.skip {
+  background: #fdf0e8;
+  color: #a85a1a;
+}
+
+tr.exception-row td {
+  background: #faf7ff;
+}
+
+/* 年度例外列表里的小胶囊 */
+.ex-chip {
+  display: inline-block;
+  margin: 1px 0;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 11.5px;
+  line-height: 1.6;
+}
+
+.ex-chip.skip {
+  background: #fdf0e8;
+  color: #a85a1a;
+}
+
+.ex-chip.move {
+  background: #f3eefe;
+  color: #6a3fb5;
+}
+
+.ex-none {
+  color: var(--ink-soft);
+  font-size: 12px;
+}
+
+/* 档案表单里的年度例外编辑框 */
+.ex-box {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.ex-box.invalid {
+  border-color: var(--danger);
+  background: #fdf3f3;
+}
+
+.ex-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.ex-hint {
+  color: var(--ink-soft);
+  font-size: 11.5px;
+  flex: 1;
+}
+
+.ex-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.ex-row {
+  border: 1px dashed var(--line);
+  border-radius: 6px;
+  padding: 8px 10px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: flex-end;
+}
+
+.ex-row label {
+  min-width: 90px;
+  flex: 0 0 auto;
+}
+
+.ex-row label input,
+.ex-row label select {
+  width: auto;
+}
+
+.ex-points {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  flex-basis: 100%;
+}
+
+.ex-point {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: flex-end;
+}
+
+.ex-point-label {
+  font-size: 12px;
+  color: var(--ink-soft);
+  padding-bottom: 6px;
+  min-width: 32px;
+}
+
+.ex-point label {
+  min-width: 70px;
+}
+
+.ex-note {
+  flex: 1 1 200px;
+}
+
 .empty-tip {
   margin: 12px 0 0;
   color: var(--ink-soft);
