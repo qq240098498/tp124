@@ -59,7 +59,12 @@ function seedZones() {
       usesDst: true, dstOffsetMinutes: 660,
       dstStart: { month: 10, week: '1', weekday: 0, hour: 2, minute: 0 },
       dstEnd: { month: 4, week: '1', weekday: 0, hour: 3, minute: 0 },
-      fromYear: 1971, toYear: null, note: '南半球，夏令时跨年，开始月份晚于结束月份', createdAt: at, updatedAt: at,
+      dstExceptions: [
+        { year: 2000, disabled: false,
+          start: { year: 2000, month: 8, day: 27, hour: 2, minute: 0 },
+          end: { year: 2001, month: 4, day: 1, hour: 3, minute: 0 } },
+      ],
+      fromYear: 1971, toYear: null, note: '南半球，夏令时跨年，开始月份晚于结束月份；二〇〇〇年因悉尼奥运会提前到八月开始', createdAt: at, updatedAt: at,
     },
     {
       id: 'zone-1008', name: 'Pacific/Chatham', displayName: '查塔姆群岛时间', offsetMinutes: 765,
@@ -101,6 +106,60 @@ function normalizeRulePart(item) {
   return { month, week, weekday, hour, minute };
 }
 
+// 年度例外里的一段具体日期时刻：年、月、日、时、分
+function normalizeExceptionPart(item) {
+  if (!item || typeof item !== 'object') return null;
+  const year = Number(item.year);
+  const month = Number(item.month);
+  const day = Number(item.day);
+  const hour = Number(item.hour);
+  const minute = Number(item.minute);
+  if (!Number.isInteger(year) || year < MIN_YEAR || year > MAX_YEAR) return null;
+  if (!Number.isInteger(month) || month < 1 || month > 12) return null;
+  if (!Number.isInteger(day) || day < 1 || day > 31) return null;
+  if (!Number.isInteger(hour) || hour < 0 || hour > 23) return null;
+  if (!Number.isInteger(minute) || minute < 0 || minute > 59) return null;
+  return { year, month, day, hour, minute };
+}
+
+// 一条年度例外：要么这一年停做夏令时，要么把开始与结束换成具体日期时刻。
+// 不成立的条目一律丢掉，同一年写了两次的只留第一条，最后按年份排好。
+// crossYear 为真（南半球通用规则跨年）时，结束日期允许写到下一年
+function normalizeDstExceptions(rawList, crossYear) {
+  const list = Array.isArray(rawList) ? rawList : [];
+  const seen = new Set();
+  const result = [];
+  list.forEach((item) => {
+    if (!item || typeof item !== 'object') return;
+    const year = Number(item.year);
+    if (!Number.isInteger(year) || year < MIN_YEAR || year > MAX_YEAR) return;
+    if (seen.has(year)) return;
+    if (item.disabled === true) {
+      seen.add(year);
+      result.push({ year, disabled: true, start: null, end: null });
+      return;
+    }
+    const start = normalizeExceptionPart(item.start);
+    const end = normalizeExceptionPart(item.end);
+    // 日期是否真存在（例如二月三十）由 zones.js 的校验当场拒绝；
+    // 整理存量数据时遇到这种写不成立的条目直接丢掉，避免把坏数据带进推算
+    const endYearOk = end && (end.year === year || (crossYear && end.year === year + 1));
+    if (!start || !end || start.year !== year || !endYearOk || !datePartsExist(start) || !datePartsExist(end)) return;
+    seen.add(year);
+    result.push({ year, disabled: false, start, end });
+  });
+  result.sort((a, b) => a.year - b.year);
+  return result;
+}
+
+// 公历里这个年月日是否真的存在
+function datePartsExist(part) {
+  const probe = new Date(Date.UTC(part.year, part.month - 1, part.day));
+  return probe.getUTCFullYear() === part.year
+    && probe.getUTCMonth() === part.month - 1
+    && probe.getUTCDate() === part.day;
+}
+
 // 把单条时区档案整理成固定结构，偏移与年份越界的一律回到默认值
 function normalizeZone(item, fallbackIndex) {
   const source = item && typeof item === 'object' ? item : {};
@@ -116,6 +175,10 @@ function normalizeZone(item, fallbackIndex) {
   const fromYear = Number.isInteger(fromYearRaw) && fromYearRaw >= MIN_YEAR && fromYearRaw <= MAX_YEAR ? fromYearRaw : MIN_YEAR;
   const toYearRaw = source.toYear === null || source.toYear === undefined || source.toYear === '' ? null : Number(source.toYear);
   const toYear = Number.isInteger(toYearRaw) && toYearRaw >= MIN_YEAR && toYearRaw <= MAX_YEAR ? toYearRaw : null;
+  const dstStart = usesDst ? normalizeRulePart(source.dstStart) : null;
+  const dstEnd = usesDst ? normalizeRulePart(source.dstEnd) : null;
+  const crossYear = !!(dstStart && dstEnd && dstStart.month > dstEnd.month);
+  const dstExceptions = usesDst ? normalizeDstExceptions(source.dstExceptions, crossYear) : [];
 
   return {
     id: typeof source.id === 'string' && source.id ? source.id : `zone-restored-${fallbackIndex + 1}`,
@@ -124,8 +187,9 @@ function normalizeZone(item, fallbackIndex) {
     offsetMinutes,
     usesDst,
     dstOffsetMinutes,
-    dstStart: usesDst ? normalizeRulePart(source.dstStart) : null,
-    dstEnd: usesDst ? normalizeRulePart(source.dstEnd) : null,
+    dstStart,
+    dstEnd,
+    dstExceptions,
     fromYear,
     toYear,
     note: typeof source.note === 'string' ? source.note : '',

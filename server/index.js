@@ -36,6 +36,15 @@ app.get('/api/zones/:id', (req, res) => {
   }
 });
 
+// 单条档案某一年的夏令时切换时刻表，年度例外优先于通用规则
+app.get('/api/zones/:id/transitions', (req, res) => {
+  try {
+    res.json(api.getZoneTransitions(req.params.id, api.readQuery(req.query, 'year')));
+  } catch (err) {
+    sendError(res, err);
+  }
+});
+
 app.patch('/api/zones/:id', (req, res) => {
   try {
     res.json(api.updateZone(req.params.id, req.body));

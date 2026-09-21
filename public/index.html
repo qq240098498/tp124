@@ -51,6 +51,7 @@
               <th>夏令时偏移</th>
               <th>切换规则</th>
               <th>生效年份</th>
+              <th>年度例外</th>
               <th>备注</th>
               <th>操作</th>
             </tr>
@@ -92,11 +93,47 @@
           <label data-field="toYear">结束年份<input id="zone-to-year" placeholder="留空表示至今" maxlength="4"></label>
           <label class="full" data-field="note">备注<input id="zone-note" placeholder="这条档案有什么需要留意的" maxlength="200"></label>
         </div>
+        <div class="exceptions-row" data-field="dstExceptions">
+          <div class="exceptions-head">
+            <span class="rule-label">年度例外</span>
+            <span class="hint">偶尔某一年不实行夏令时，或把切换挪到别的日期时刻，就在这里按年单独写；不写的年份按通用规则走</span>
+            <button type="button" id="exception-add" class="ghost">加一条例外</button>
+          </div>
+          <div id="exception-list" class="exception-list"></div>
+        </div>
         <div class="form-actions">
           <button type="submit">保存</button>
           <button type="button" id="zone-cancel" class="ghost">取消</button>
         </div>
       </form>
+    </section>
+
+    <section class="panel hidden" id="transitions-panel">
+      <div class="panel-head">
+        <h2 id="transitions-title">切换时刻表</h2>
+        <div class="filters">
+          <label class="inline" data-field="transitions-year">年份<input id="transitions-year" placeholder="例如 2026" maxlength="4"></label>
+          <button type="button" id="transitions-run">推算这一年</button>
+          <button type="button" id="transitions-close" class="ghost">收起</button>
+        </div>
+      </div>
+      <p class="convert-meta" id="transitions-meta">选好年份后点推算</p>
+      <div class="table-wrap">
+        <table class="grid">
+          <thead>
+            <tr>
+              <th>切换</th>
+              <th>来源</th>
+              <th>挂钟变化</th>
+              <th>对应 UTC</th>
+              <th>偏移变化</th>
+              <th>说明</th>
+            </tr>
+          </thead>
+          <tbody id="transitions-body"></tbody>
+        </table>
+      </div>
+      <p class="empty-tip hidden" id="transitions-empty"></p>
     </section>
 
     <section class="panel">

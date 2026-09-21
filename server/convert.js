@@ -1,6 +1,7 @@
 const { load, WEEKDAY_NAMES } = require('./store');
 const { ApiError, pickText } = require('./errors');
 const { offsetText } = require('./zones');
+const dst = require('./dst');
 
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 const TIME_PATTERN = /^([01]\d|2[0-3]):[0-5]\d$/;
@@ -55,7 +56,25 @@ function dayOffsetText(dayOffset) {
   return `前 ${Math.abs(dayOffset)} 天`;
 }
 
-// 换算：先把输入时刻按来源时区的偏移折算成基准时刻，再逐个时区加上各自的偏移
+// 夏令时状态的文字与标记；走年度例外的年份要把“例外”两个字写明
+function dstStatus(zone, info) {
+  if (!zone.usesDst) {
+    return { status: 'none', dstActive: false, exceptionUsed: false, exceptionYear: null, text: '不实行', tag: '' };
+  }
+  if (info.dstActive) {
+    return info.exceptionYear !== null
+      ? { status: 'dst-exception', dstActive: true, exceptionUsed: true, exceptionYear: info.exceptionYear, text: `夏令时（${info.exceptionYear} 年例外）`, tag: '例外' }
+      : { status: 'dst', dstActive: true, exceptionUsed: false, exceptionYear: null, text: '夏令时', tag: '' };
+  }
+  if (info.exceptionYear !== null) {
+    const exception = (zone.dstExceptions || []).find((item) => item.year === info.exceptionYear);
+    const reason = exception && !exception.disabled ? '改期后此刻仍在标准时' : '例外停做';
+    return { status: 'standard-exception', dstActive: false, exceptionUsed: true, exceptionYear: info.exceptionYear, text: `标准时（${info.exceptionYear} 年${reason}）`, tag: '例外' };
+  }
+  return { status: 'standard', dstActive: false, exceptionUsed: false, exceptionYear: null, text: '标准时', tag: '' };
+}
+
+// 换算：先把来源时区填的当地时刻折成基准（UTC），再逐个时区按这一刻实际生效的偏移加上去
 function convert(options) {
   const input = options && typeof options === 'object' ? options : {};
   const date = validateDate(input.date);
@@ -67,22 +86,27 @@ function convert(options) {
   const source = data.zones.find((item) => item.id === zoneId);
   if (!source) throw new ApiError(404, 'ZONE_NOT_FOUND', '选中的时区没有登记过', 'zoneId');
 
-  const baseMs = Date.UTC(date.year, date.month - 1, date.day, time.hour, time.minute);
-  const utcMs = baseMs - source.offsetMinutes * 60000;
-  const baseDay = Math.floor(baseMs / DAY_MS);
+  const sourceWallMs = Date.UTC(date.year, date.month - 1, date.day, time.hour, time.minute);
+  const resolved = dst.resolveWallInput(source, sourceWallMs);
+  const utcMs = resolved.utcMs;
+  const baseDay = Math.floor(sourceWallMs / DAY_MS);
   const utcDate = new Date(utcMs);
 
   const results = data.zones.map((zone) => {
-    const localMs = utcMs + zone.offsetMinutes * 60000;
+    const info = dst.effectiveOffsetAtUtc(zone, utcMs);
+    const status = dstStatus(zone, info);
+    const localMs = utcMs + info.offsetMinutes * 60000;
     const local = new Date(localMs);
     const dayOffset = Math.floor(localMs / DAY_MS) - baseDay;
-    const diffMinutes = zone.offsetMinutes - source.offsetMinutes;
+    const diffMinutes = info.offsetMinutes - resolved.appliedOffsetMinutes;
     return {
       zoneId: zone.id,
       name: zone.name,
       displayName: zone.displayName,
-      offsetMinutes: zone.offsetMinutes,
-      offsetText: offsetText(zone.offsetMinutes),
+      offsetMinutes: info.offsetMinutes,
+      standardOffsetMinutes: zone.offsetMinutes,
+      offsetText: offsetText(info.offsetMinutes),
+      standardOffsetText: offsetText(zone.offsetMinutes),
       localDate: `${local.getUTCFullYear()}-${pad(local.getUTCMonth() + 1)}-${pad(local.getUTCDate())}`,
       localTime: `${pad(local.getUTCHours())}:${pad(local.getUTCMinutes())}`,
       weekday: WEEKDAY_NAMES[local.getUTCDay()],
@@ -91,6 +115,11 @@ function convert(options) {
       diffMinutes,
       diffText: diffText(diffMinutes),
       usesDst: zone.usesDst,
+      dstActive: status.dstActive,
+      dstStatus: status.status,
+      dstStatusText: status.text,
+      exceptionUsed: status.exceptionUsed,
+      exceptionYear: status.exceptionYear,
       isSource: zone.id === source.id,
     };
   });
@@ -100,6 +129,8 @@ function convert(options) {
     return a.name < b.name ? -1 : 1;
   });
 
+  const sourceStatus = dstStatus(source, dst.effectiveOffsetAtUtc(source, utcMs));
+
   return {
     input: {
       date: date.text,
@@ -107,8 +138,13 @@ function convert(options) {
       zoneId: source.id,
       zoneName: source.name,
       zoneDisplayName: source.displayName,
-      offsetText: offsetText(source.offsetMinutes),
+      offsetText: offsetText(resolved.appliedOffsetMinutes),
+      standardOffsetText: offsetText(source.offsetMinutes),
       usesDst: source.usesDst,
+      dstActive: sourceStatus.dstActive,
+      dstStatusText: sourceStatus.text,
+      wallGap: resolved.kind === 'skipped' ? resolved.message : '',
+      wallRepeat: resolved.kind === 'repeated' ? resolved.message : '',
     },
     standard: {
       date: `${utcDate.getUTCFullYear()}-${pad(utcDate.getUTCMonth() + 1)}-${pad(utcDate.getUTCDate())}`,
@@ -116,6 +152,8 @@ function convert(options) {
     },
     zonesInScope: data.zones.length,
     crossDayCount: results.filter((item) => item.dayOffset !== 0).length,
+    exceptionCount: results.filter((item) => item.exceptionUsed).length,
+    dstActiveCount: results.filter((item) => item.dstActive).length,
     maxDiffMinutes: results.reduce((acc, item) => Math.max(acc, Math.abs(item.diffMinutes)), 0),
     results,
     convertedAt: new Date().toISOString(),

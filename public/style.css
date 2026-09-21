@@ -374,3 +374,128 @@ label.full input {
   display: flex;
   gap: 10px;
 }
+
+.muted {
+  color: var(--ink-soft);
+}
+
+.small {
+  font-size: 11px;
+  margin-top: 2px;
+}
+
+.tag.exc {
+  background: #f1e9ff;
+  color: #6b3fc4;
+  border: 1px solid #d8c6f5;
+  white-space: nowrap;
+}
+
+/* 年度例外 */
+.exceptions-row {
+  padding: 10px 12px;
+  border: 1px dashed var(--line);
+  border-radius: 6px;
+  background: #fafbff;
+}
+
+.exceptions-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
+.exceptions-head .hint {
+  flex: 1 1 260px;
+  color: var(--ink-soft);
+  font-size: 12px;
+}
+
+.exception-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 10px;
+}
+
+.exc-row {
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #fff;
+}
+
+.exc-row-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 12px;
+}
+
+.exc-row-head label {
+  min-width: 160px;
+  flex: 0 1 auto;
+}
+
+.exc-row-head .exc-year {
+  width: 120px;
+}
+
+.exc-row-head .exc-mode {
+  min-width: 200px;
+}
+
+.exc-row-head .exc-remove {
+  margin-left: auto;
+}
+
+.exc-dates {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: 10px;
+}
+
+.exc-dates label {
+  min-width: 240px;
+  flex: 1 1 300px;
+}
+
+.exc-datetime {
+  display: flex;
+  gap: 6px;
+}
+
+.exc-datetime input {
+  flex: 1 1 auto;
+}
+
+td.exc-cell {
+  max-width: 300px;
+  white-space: normal;
+  color: var(--ink-soft);
+  font-size: 12px;
+}
+
+.exc-line {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  margin-bottom: 2px;
+}
+
+.exc-detail {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+tr.exception-row td {
+  background: #faf6ff;
+}
+
+.exceptions-row.invalid {
+  border-color: var(--danger);
+  background: #fdf3f3;
+}

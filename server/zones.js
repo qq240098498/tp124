@@ -1,6 +1,7 @@
 const crypto = require('crypto');
 const { load, save, MIN_OFFSET, MAX_OFFSET, MIN_YEAR, MAX_YEAR, MAX_NAME_LENGTH, MAX_DISPLAY_NAME_LENGTH, MAX_NOTE_LENGTH } = require('./store');
 const { ApiError, pickText } = require('./errors');
+const dst = require('./dst');
 
 // 时区名固定成地区加城市的写法，UTC 单独允许
 const NAME_PATTERN = /^([A-Za-z_]+(\/[A-Za-z_]+)+|UTC)$/;
@@ -91,6 +92,118 @@ function validateNote(value) {
   return value.trim();
 }
 
+// 年度例外里的一段具体日期时刻，用它自己的年份核验日期是否存在，例如 2021-02-29 不成立
+function validateExceptionPart(value, index, which, allowedYears, allowedLabel) {
+  const field = `dstExceptions.${index}.${which}`;
+  const source = value && typeof value === 'object' ? value : null;
+  if (!source) throw new ApiError(400, 'EXCEPTION_DATE_REQUIRED', `要把${which === 'start' ? '开始' : '结束'}日期与时刻填上`, field);
+
+  const year = Number(source.year);
+  if (!Number.isInteger(year)) {
+    throw new ApiError(400, 'EXCEPTION_YEAR_INVALID', '例外日期的年份要写成整数', `${field}.year`);
+  }
+  const month = Number(source.month);
+  if (!Number.isInteger(month) || month < 1 || month > 12) {
+    throw new ApiError(400, 'EXCEPTION_MONTH_INVALID', '月份要填一到十二', `${field}.month`);
+  }
+  const day = Number(source.day);
+  if (!Number.isInteger(day) || day < 1 || day > 31) {
+    throw new ApiError(400, 'EXCEPTION_DAY_INVALID', '日期要填一到三十一', `${field}.day`);
+  }
+  const hour = Number(source.hour);
+  if (!Number.isInteger(hour) || hour < 0 || hour > 23) {
+    throw new ApiError(400, 'EXCEPTION_HOUR_INVALID', '小时要填零到二十三', `${field}.hour`);
+  }
+  const minute = Number(source.minute);
+  if (!Number.isInteger(minute) || minute < 0 || minute > 59) {
+    throw new ApiError(400, 'EXCEPTION_MINUTE_INVALID', '分钟要填零到五十九', `${field}.minute`);
+  }
+  if (!allowedYears.includes(year)) {
+    throw new ApiError(400, 'EXCEPTION_DATE_YEAR_MISMATCH',
+      `${which === 'start' ? '开始' : '结束'}日期的年份${allowedLabel}`, `${field}.year`);
+  }
+  const probe = new Date(Date.UTC(year, month - 1, day));
+  if (probe.getUTCFullYear() !== year || probe.getUTCMonth() !== month - 1 || probe.getUTCDate() !== day) {
+    throw new ApiError(400, 'EXCEPTION_DATE_NOT_EXIST', `${year} 年 ${month} 月没有 ${day} 号这一天`, `${field}.day`);
+  }
+  return { year, month, day, hour, minute };
+}
+
+function partToMs(part) {
+  return Date.UTC(part.year, part.month - 1, part.day, part.hour, part.minute);
+}
+
+// 年度例外列表：年份要在生效区间内、不能重复、日期要真存在、开始要早于结束
+function validateExceptions(value, ctx) {
+  if (value === undefined || value === null) return [];
+  if (!Array.isArray(value)) {
+    throw new ApiError(400, 'EXCEPTION_LIST_INVALID', '年度例外要写成列表', 'dstExceptions');
+  }
+  if (!ctx.usesDst && value.length > 0) {
+    throw new ApiError(400, 'EXCEPTION_WITHOUT_DST', '不实行夏令时的档案不能写年度例外', 'dstExceptions');
+  }
+
+  const upper = ctx.toYear === null ? MAX_YEAR : ctx.toYear;
+  const seen = new Set();
+  const result = [];
+
+  value.forEach((raw, index) => {
+    const fieldYear = `dstExceptions.${index}.year`;
+    const source = raw && typeof raw === 'object' ? raw : null;
+    if (!source) {
+      throw new ApiError(400, 'EXCEPTION_SHAPE_INVALID', `第 ${index + 1} 条例外没写完整`, `dstExceptions.${index}`);
+    }
+    const year = Number(source.year);
+    if (!Number.isInteger(year)) {
+      throw new ApiError(400, 'EXCEPTION_YEAR_REQUIRED', '每条例外都要写年份', fieldYear);
+    }
+    if (year < MIN_YEAR || year > MAX_YEAR) {
+      throw new ApiError(400, 'EXCEPTION_YEAR_INVALID', `例外年份要在 ${MIN_YEAR} 到 ${MAX_YEAR} 之间`, fieldYear);
+    }
+    if (year < ctx.fromYear || year > upper) {
+      const range = ctx.toYear === null
+        ? `${ctx.fromYear} 年以后`
+        : `${ctx.fromYear} 到 ${ctx.toYear} 年之间`;
+      throw new ApiError(400, 'EXCEPTION_YEAR_OUT_OF_RANGE', `例外年份要落在档案生效区间内（${range}）`, fieldYear);
+    }
+    if (seen.has(year)) {
+      throw new ApiError(400, 'EXCEPTION_YEAR_DUPLICATED', `${year} 年的例外写了两次，同一年只能写一条`, fieldYear);
+    }
+    seen.add(year);
+
+    const disabled = source.disabled === true || source.disabled === 'true';
+    const hasStart = source.start !== undefined && source.start !== null;
+    const hasEnd = source.end !== undefined && source.end !== null;
+
+    if (disabled) {
+      if (hasStart || hasEnd) {
+        throw new ApiError(400, 'EXCEPTION_DISABLED_WITH_DATES',
+          `${year} 年既写了停做夏令时，就不要再写开始与结束日期`, `dstExceptions.${index}`);
+      }
+      result.push({ year, disabled: true, start: null, end: null });
+      return;
+    }
+    if (!hasStart || !hasEnd) {
+      throw new ApiError(400, 'EXCEPTION_MODE_INVALID',
+        `${year} 年的例外要写明是停做夏令时，还是把开始与结束日期都改掉`, `dstExceptions.${index}`);
+    }
+
+    // 北半球开始与结束同在这一年；南半球按通用规则跨年时，结束允许写到下一年
+    const endAllowed = ctx.crossYear ? [year, year + 1] : [year];
+    const endLabel = ctx.crossYear ? `要写在 ${year} 年（跨年规则可写到 ${year + 1} 年）` : `要写在 ${year} 年`;
+    const start = validateExceptionPart(source.start, index, 'start', [year], `要写在 ${year} 年`);
+    const end = validateExceptionPart(source.end, index, 'end', endAllowed, endLabel);
+    if (partToMs(start) >= partToMs(end)) {
+      throw new ApiError(400, 'EXCEPTION_ORDER_INVALID',
+        `${year} 年的例外把开始挪到了结束之后（含时刻），推算不出夏令时区间`, `dstExceptions.${index}.end`);
+    }
+    result.push({ year, disabled: false, start, end });
+  });
+
+  result.sort((a, b) => a.year - b.year);
+  return result;
+}
+
 // 一整条档案的校验：偏移、夏令时三段与生效年份要能对得上
 function validatePayload(input, data, selfId) {
   const name = validateName(input.name, data, selfId);
@@ -107,6 +220,7 @@ function validatePayload(input, data, selfId) {
   let dstOffsetMinutes = null;
   let dstStart = null;
   let dstEnd = null;
+  let crossYear = false;
 
   if (usesDst) {
     dstOffsetMinutes = validateOffset(input.dstOffsetMinutes, 'dstOffsetMinutes');
@@ -121,7 +235,17 @@ function validatePayload(input, data, selfId) {
     if (sameRulePart(dstStart, dstEnd)) {
       throw new ApiError(400, 'DST_RULE_SAME', '开始与结束两段规则不能完全相同，否则推算不出切换区间', 'dstEnd');
     }
+    // 开始月份晚于结束月份表示南半球跨年实行夏令时，年度例外的结束日期因此允许写到下一年
+    crossYear = dstStart.month > dstEnd.month;
   }
+
+  const resolvedFromYear = fromYear === null ? MIN_YEAR : fromYear;
+  const dstExceptions = validateExceptions(input.dstExceptions, {
+    usesDst,
+    fromYear: resolvedFromYear,
+    toYear,
+    crossYear,
+  });
 
   return {
     name,
@@ -131,7 +255,8 @@ function validatePayload(input, data, selfId) {
     dstOffsetMinutes,
     dstStart,
     dstEnd,
-    fromYear: fromYear === null ? MIN_YEAR : fromYear,
+    dstExceptions,
+    fromYear: resolvedFromYear,
     toYear,
     note: validateNote(input.note),
   };
@@ -147,11 +272,15 @@ function offsetText(minutes) {
 }
 
 function withOffsetText(zone) {
+  const exceptions = Array.isArray(zone.dstExceptions) ? zone.dstExceptions : [];
   return {
     ...zone,
+    dstExceptions: exceptions,
     offsetText: offsetText(zone.offsetMinutes),
     dstOffsetText: zone.usesDst && zone.dstOffsetMinutes !== null ? offsetText(zone.dstOffsetMinutes) : '',
     yearRangeText: zone.toYear === null ? `${zone.fromYear} 年起` : `${zone.fromYear} 至 ${zone.toYear}`,
+    exceptionCount: exceptions.length,
+    exceptionYearsText: exceptions.map((item) => String(item.year)).join('、'),
   };
 }
 
@@ -220,6 +349,7 @@ function updateZone(id, payload) {
     dstEnd: input.dstEnd === undefined ? found.dstEnd : input.dstEnd,
     fromYear: input.fromYear === undefined ? found.fromYear : input.fromYear,
     toYear: input.toYear === undefined ? found.toYear : input.toYear,
+    dstExceptions: input.dstExceptions === undefined ? found.dstExceptions : input.dstExceptions,
     note: input.note === undefined ? found.note : input.note,
   };
 
@@ -239,12 +369,45 @@ function deleteZone(id) {
   return { id: removed.id, name: removed.name, displayName: removed.displayName };
 }
 
+// 单条档案某一年的切换时刻表，通用规则与年度例外各按各的来，并标明走的是哪一个
+function getZoneTransitions(id, yearValue) {
+  const data = load();
+  const zone = data.zones.find((item) => item.id === id);
+  if (!zone) throw new ApiError(404, 'ZONE_NOT_FOUND', '这条时区档案不存在或已被删除', '');
+
+  const raw = yearValue === undefined || yearValue === null || yearValue === '' ? null : Number(yearValue);
+  if (raw === null) {
+    throw new ApiError(400, 'YEAR_REQUIRED', '请填写要推算的年份', 'year');
+  }
+  if (!dst.isValidYear(raw)) {
+    throw new ApiError(400, 'YEAR_INVALID', `年份要填 ${MIN_YEAR} 到 ${MAX_YEAR} 之间的整数`, 'year');
+  }
+
+  const detail = dst.transitionsForYear(zone, raw);
+  const exceptions = Array.isArray(zone.dstExceptions) ? zone.dstExceptions : [];
+  const exception = exceptions.find((item) => item.year === raw) || null;
+  return {
+    zone: withOffsetText(zone),
+    year: raw,
+    usesDst: zone.usesDst,
+    inRange: detail.inRange,
+    crossYear: dst.crossYearRule(zone),
+    exception,
+    exceptionText: exception ? dst.exceptionText(exception) : '',
+    effectiveMode: !zone.usesDst
+      ? 'no-dst'
+      : (!detail.inRange ? 'out-of-range' : (exception ? (exception.disabled ? 'exception-disabled' : 'exception-dates') : 'generic')),
+    events: detail.events,
+  };
+}
+
 module.exports = {
   listZones,
   getZone,
   createZone,
   updateZone,
   deleteZone,
+  getZoneTransitions,
   offsetText,
   withOffsetText,
 };

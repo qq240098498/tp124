@@ -5,6 +5,7 @@ const state = {
   counts: { total: 0, dstCount: 0, noDstCount: 0 },
   editingId: '',
   lastConvert: null,
+  transitionsZoneId: '',
 };
 
 const MONTHS = [
@@ -56,7 +57,19 @@ function clearFieldMarks() {
 
 function markField(field) {
   if (!field) return;
-  const target = document.querySelector(`[data-field="${field}"]`);
+  let target = document.querySelector(`[data-field="${field}"]`);
+  if (!target && field.includes('.')) {
+    // 服务端给到 dstExceptions.0.start.day 这样的细位置时，回落到最接近的外层（如 dstExceptions.0.start）
+    const prefixes = [];
+    const parts = field.split('.');
+    for (let i = parts.length - 1; i > 0; i -= 1) {
+      prefixes.push(parts.slice(0, i).join('.'));
+    }
+    prefixes.some((prefix) => {
+      target = document.querySelector(`[data-field="${prefix}"]`);
+      return !!target;
+    });
+  }
   if (!target) return;
   target.classList.add('invalid');
   const input = target.matches('input, select, textarea') ? target : target.querySelector('input, select, textarea');
@@ -88,6 +101,24 @@ function ruleText(part) {
   const hour = String(part.hour).padStart(2, '0');
   const minute = String(part.minute).padStart(2, '0');
   return `${MONTH_LABEL[String(part.month)] || part.month}${WEEK_LABEL[part.week] || part.week}${WEEKDAY_LABEL[String(part.weekday)] || part.weekday} ${hour}:${minute}`;
+}
+
+const pad2 = (num) => String(num).padStart(2, '0');
+
+// 年度例外在档案列表里的简写法
+function exceptionCellHtml(item) {
+  if (!item.usesDst) return '—';
+  const list = Array.isArray(item.dstExceptions) ? item.dstExceptions : [];
+  if (!list.length) return '<span class="muted">无</span>';
+  return list.map((ex) => {
+    if (ex.disabled) {
+      return `<div class="exc-line"><span class="tag exc">停做</span><span class="mono">${ex.year}</span></div>`;
+    }
+    const s = ex.start;
+    const e = ex.end;
+    const text = `${s.year}-${pad2(s.month)}-${pad2(s.day)} ${pad2(s.hour)}:${pad2(s.minute)} 起，${e.year}-${pad2(e.month)}-${pad2(e.day)} ${pad2(e.hour)}:${pad2(e.minute)} 止`;
+    return `<div class="exc-line"><span class="tag exc">改期</span><span class="mono">${ex.year}</span><span class="exc-detail" title="${escapeHtml(text)}">${escapeHtml(text)}</span></div>`;
+  }).join('');
 }
 
 const OPERATOR_KEY = 'zone-clock-operator';
@@ -145,8 +176,10 @@ function renderZones() {
       <td class="mono">${item.dstOffsetText ? escapeHtml(item.dstOffsetText) : '—'}</td>
       <td class="rule-cell">${item.usesDst ? `${escapeHtml(ruleText(item.dstStart))} 起，${escapeHtml(ruleText(item.dstEnd))} 止` : '—'}</td>
       <td class="mono">${escapeHtml(item.yearRangeText)}</td>
+      <td class="exc-cell">${exceptionCellHtml(item)}</td>
       <td class="note-cell">${escapeHtml(item.note)}</td>
       <td class="actions">
+        ${item.usesDst ? `<button type="button" class="link" data-zone-transitions="${escapeHtml(item.id)}">时刻表</button>` : ''}
         <button type="button" class="link" data-zone-edit="${escapeHtml(item.id)}">编辑</button>
         <button type="button" class="link danger" data-zone-delete="${escapeHtml(item.id)}">删除</button>
       </td>
@@ -186,6 +219,8 @@ function openZoneForm(zone) {
   el('zone-from-year').value = zone ? String(zone.fromYear) : '';
   el('zone-to-year').value = zone && zone.toYear !== null ? String(zone.toYear) : '';
   el('zone-note').value = zone ? zone.note : '';
+  renderExceptionRows(zone && Array.isArray(zone.dstExceptions) ? zone.dstExceptions : []);
+  syncDstFormVisibility();
   el('zone-form').classList.remove('hidden');
   el('zone-name').focus();
 }
@@ -193,13 +228,106 @@ function openZoneForm(zone) {
 function closeZoneForm() {
   state.editingId = '';
   el('zone-form').classList.add('hidden');
+  el('exception-list').innerHTML = '';
   clearFieldMarks();
+}
+
+// 年度例外的一行草稿：年份 + 方式（改期或停做）+ 两段具体日期时刻
+function exceptionRowHtml(exc, index) {
+  const isDisabled = !!(exc && exc.disabled);
+  const s = exc && exc.start;
+  const e = exc && exc.end;
+  const dateValue = (p) => (p ? `${p.year}-${pad2(p.month)}-${pad2(p.day)}` : '');
+  const timeValue = (p) => (p ? `${pad2(p.hour)}:${pad2(p.minute)}` : '00:00');
+  return `<div class="exc-row" data-exc-index="${index}">
+    <div class="exc-row-head">
+      <label data-field="dstExceptions.${index}.year">年份
+        <input class="exc-year" value="${exc ? exc.year : ''}" placeholder="例如 2000" maxlength="4">
+      </label>
+      <label>这一年
+        <select class="exc-mode">
+          <option value="dates"${isDisabled ? '' : ' selected'}>改期（另定开始与结束）</option>
+          <option value="disabled"${isDisabled ? ' selected' : ''}>停做夏令时</option>
+        </select>
+      </label>
+      <button type="button" class="link danger exc-remove">删掉这条</button>
+    </div>
+    <div class="exc-dates"${isDisabled ? ' hidden' : ''}>
+      <label data-field="dstExceptions.${index}.start">开始（日期与时刻）
+        <span class="exc-datetime"><input type="date" class="exc-start-date" value="${dateValue(s)}"><input type="time" class="exc-start-time" value="${timeValue(s)}"></span>
+      </label>
+      <label data-field="dstExceptions.${index}.end">结束（日期与时刻，跨年可填下一年）
+        <span class="exc-datetime"><input type="date" class="exc-end-date" value="${dateValue(e)}"><input type="time" class="exc-end-time" value="${timeValue(e)}"></span>
+      </label>
+    </div>
+  </div>`;
+}
+
+function renderExceptionRows(list) {
+  el('exception-list').innerHTML = list.map((exc, index) => exceptionRowHtml(exc, index)).join('');
+}
+
+function addExceptionRow() {
+  const list = el('exception-list');
+  list.insertAdjacentHTML('beforeend', exceptionRowHtml(null, list.children.length));
+}
+
+function splitDateTime(dateValue, timeValue, field, index, which) {
+  if (!dateValue) {
+    const error = new Error('要把日期填上');
+    error.field = `dstExceptions.${index}.${which}`;
+    throw error;
+  }
+  const dateParts = dateValue.split('-').map(Number);
+  const timeParts = (timeValue || '00:00').split(':').map(Number);
+  return { year: dateParts[0], month: dateParts[1], day: dateParts[2], hour: timeParts[0], minute: timeParts[1] };
+}
+
+// 提交时把每一行读回成 dstExceptions；前端先挡一道，服务端还会再核验
+function collectExceptionPayload() {
+  if (!el('zone-uses-dst').checked) return [];
+  const rows = [...el('exception-list').querySelectorAll('.exc-row')];
+  return rows.map((row, index) => {
+    const year = row.querySelector('.exc-year').value.trim();
+    if (!year) {
+      const error = new Error('每条例外都要写年份');
+      error.field = `dstExceptions.${index}.year`;
+      throw error;
+    }
+    const mode = row.querySelector('.exc-mode').value;
+    if (mode === 'disabled') return { year: Number(year), disabled: true, start: null, end: null };
+    const start = splitDateTime(
+      row.querySelector('.exc-start-date').value,
+      row.querySelector('.exc-start-time').value, null, index, 'start',
+    );
+    const end = splitDateTime(
+      row.querySelector('.exc-end-date').value,
+      row.querySelector('.exc-end-time').value, null, index, 'end',
+    );
+    return { year: Number(year), disabled: false, start, end };
+  });
+}
+
+// 不实行夏令时时，规则行与例外行一并收起来
+function syncDstFormVisibility() {
+  const usesDst = el('zone-uses-dst').checked;
+  document.querySelectorAll('.rule-row').forEach((node) => node.classList.toggle('hidden', !usesDst));
+  el('zone-dst-offset').closest('label').classList.toggle('hidden', !usesDst);
+  el('exception-add').closest('.exceptions-row').classList.toggle('hidden', !usesDst);
 }
 
 async function submitZone(event) {
   event.preventDefault();
   clearNotice();
   clearFieldMarks();
+  let dstExceptions;
+  try {
+    dstExceptions = collectExceptionPayload();
+  } catch (err) {
+    notify(err.message, 'error');
+    markField(err.field);
+    return;
+  }
   const payload = {
     name: el('zone-name').value,
     displayName: el('zone-display').value,
@@ -222,6 +350,7 @@ async function submitZone(event) {
     },
     fromYear: el('zone-from-year').value,
     toYear: el('zone-to-year').value === '' ? null : el('zone-to-year').value,
+    dstExceptions,
     note: el('zone-note').value,
   };
   if (!payload.usesDst) {
@@ -264,7 +393,9 @@ async function runConvert() {
 }
 
 function renderConvert(result) {
-  el('convert-meta').textContent = `来源 ${result.input.zoneName}（${result.input.zoneDisplayName}，${result.input.offsetText}）的 ${result.input.date} ${result.input.time}，换算时刻 ${formatTime(result.convertedAt)}；参与换算的档案 ${result.zonesInScope} 条，与来源不同天的有 ${result.crossDayCount} 条，最大时差 ${Math.floor(result.maxDiffMinutes / 60)} 小时 ${result.maxDiffMinutes % 60} 分`;
+  const gap = result.input.wallGap ? ` <span class="tag warn">${escapeHtml(result.input.wallGap)}</span>` : '';
+  const repeat = result.input.wallRepeat ? ` <span class="tag warn">${escapeHtml(result.input.wallRepeat)}</span>` : '';
+  el('convert-meta').innerHTML = `来源 ${result.input.zoneName}（${result.input.zoneDisplayName}，${result.input.offsetText}${result.input.usesDst ? `，${escapeHtml(result.input.dstStatusText)}` : ''}）的 ${result.input.date} ${result.input.time}${gap}${repeat}，换算时刻 ${formatTime(result.convertedAt)}；参与换算的档案 ${result.zonesInScope} 条，处于夏令时 ${result.dstActiveCount} 条、按年度例外走 ${result.exceptionCount} 条，与来源不同天的有 ${result.crossDayCount} 条，最大时差 ${Math.floor(result.maxDiffMinutes / 60)} 小时 ${result.maxDiffMinutes % 60} 分`;
   const body = el('convert-body');
   body.innerHTML = result.results.map((item) => `<tr class="${item.isSource ? 'source-row' : ''}">
       <td class="mono">${escapeHtml(item.name)}</td>
@@ -273,17 +404,126 @@ function renderConvert(result) {
       <td class="mono">${escapeHtml(item.localTime)}</td>
       <td>${escapeHtml(item.weekday)}</td>
       <td><span class="tag ${item.dayOffset === 0 ? 'off' : 'warn'}">${escapeHtml(item.dayOffsetText)}</span></td>
-      <td class="mono">${escapeHtml(item.offsetText)}</td>
+      <td class="mono">${escapeHtml(item.offsetText)}${item.usesDst && item.offsetMinutes !== item.standardOffsetMinutes ? `<div class="muted small">标准 ${escapeHtml(item.standardOffsetText)}</div>` : ''}</td>
       <td>${escapeHtml(item.diffText)}</td>
-      <td>${item.usesDst ? '有规则' : '—'}</td>
+      <td>${dstCellHtml(item)}</td>
     </tr>`).join('');
   el('convert-empty').classList.toggle('hidden', result.results.length > 0);
+}
+
+function dstCellHtml(item) {
+  if (!item.usesDst) return '—';
+  if (item.exceptionUsed) {
+    return `<span class="tag exc">例外</span><div class="small">${escapeHtml(item.dstStatusText)}</div>`;
+  }
+  if (item.dstActive) return '<span class="tag on">夏令时</span>';
+  return '<span class="tag off">标准时</span>';
+}
+
+// 切换时刻表：先看这一年有没有例外，有就按例外推算并把“例外”标出来
+async function openTransitions(zoneId, year) {
+  const zone = state.zones.find((item) => item.id === zoneId);
+  if (!zone) return;
+  state.transitionsZoneId = zoneId;
+  el('transitions-title').textContent = `切换时刻表：${zone.name}`;
+  el('transitions-year').value = year || String(new Date().getFullYear());
+  el('transitions-panel').classList.remove('hidden');
+  el('transitions-panel').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  await runTransitions();
+}
+
+async function runTransitions() {
+  const year = el('transitions-year').value.trim();
+  if (!year) {
+    notify('请填写要推算的年份', 'error');
+    markField('transitions-year');
+    return;
+  }
+  try {
+    const result = await request(`/api/zones/${encodeURIComponent(state.transitionsZoneId)}/transitions?year=${encodeURIComponent(year)}`);
+    renderTransitions(result);
+  } catch (err) {
+    notify(err.message, 'error');
+    markField(err.field === 'year' ? 'transitions-year' : err.field);
+  }
+}
+
+function renderTransitions(result) {
+  const modeText = {
+    'no-dst': '这条档案不实行夏令时，没有切换可推。',
+    'out-of-range': `${result.year} 年在档案生效区间之外，这一年不实行夏令时。`,
+    'generic': `${result.year} 年没有年度例外，按通用规则推算。`,
+    'exception-disabled': `${result.year} 年按年度例外停做夏令时，全年使用标准时间。`,
+    'exception-dates': `${result.year} 年按年度例外改期，不使用通用规则的切换日期。`,
+  }[result.effectiveMode] || '';
+  el('transitions-meta').textContent = modeText;
+
+  const body = el('transitions-body');
+  body.innerHTML = (result.events || []).map((event) => {
+    const kindText = event.kind === 'start' ? '开始夏令时' : '结束夏令时';
+    const sourceTag = event.omitted
+      ? '<span class="tag exc">例外</span>'
+      : (event.ruleSource === 'exception'
+        ? '<span class="tag exc">年度例外</span>'
+        : '<span class="tag off">通用规则</span>');
+    const clock = event.omitted ? '—' : `${escapeHtml(event.clockBefore)} → ${escapeHtml(event.clockAfter)}`;
+    const offset = event.omitted
+      ? '—'
+      : `${offsetTag(event.offsetBeforeMinutes)} → ${offsetTag(event.offsetAfterMinutes)}`;
+    return `<tr class="${event.ruleSource === 'exception' ? 'exception-row' : ''}">
+      <td>${kindText}${event.year !== result.year ? `<div class="muted small">挂钟年份 ${event.year}</div>` : ''}</td>
+      <td>${sourceTag}</td>
+      <td class="mono">${clock}</td>
+      <td class="mono">${event.omitted ? '—' : escapeHtml(event.utcText)}</td>
+      <td class="mono">${offset}</td>
+      <td>${escapeHtml(event.message)}</td>
+    </tr>`;
+  }).join('');
+  const empty = el('transitions-empty');
+  const isEmpty = !result.events || !result.events.length;
+  empty.classList.toggle('hidden', !isEmpty);
+  empty.textContent = isEmpty ? (result.usesDst ? '这一年没有切换记录' : '这条档案不实行夏令时') : '';
+}
+
+function offsetTag(minutes) {
+  const sign = minutes < 0 ? '-' : '+';
+  const abs = Math.abs(minutes);
+  return `UTC${sign}${pad2(Math.floor(abs / 60))}:${pad2(abs % 60)}`;
 }
 
 // 列表上的操作用事件委托统一处理，列表重绘之后不需要重新绑定
 document.addEventListener('click', async (event) => {
   const node = event.target.closest('button');
+  if (node) {
+    if (node.id === 'exception-add') {
+      addExceptionRow();
+      return;
+    }
+    if (node.classList.contains('exc-remove')) {
+      const row = node.closest('.exc-row');
+      const list = el('exception-list');
+      if (row) row.remove();
+      [...list.children].forEach((child, index) => { child.dataset.excIndex = String(index); });
+      return;
+    }
+    if (node.id === 'transitions-run') {
+      await runTransitions();
+      return;
+    }
+    if (node.id === 'transitions-close') {
+      el('transitions-panel').classList.add('hidden');
+      state.transitionsZoneId = '';
+      return;
+    }
+  }
+
   if (!node) return;
+
+  if (node.dataset.zoneTransitions) {
+    clearNotice();
+    await openTransitions(node.dataset.zoneTransitions);
+    return;
+  }
 
   if (node.dataset.zoneEdit) {
     clearNotice();
@@ -299,6 +539,10 @@ document.addEventListener('click', async (event) => {
     try {
       await request(`/api/zones/${encodeURIComponent(node.dataset.zoneDelete)}`, { method: 'DELETE' });
       if (state.editingId === node.dataset.zoneDelete) closeZoneForm();
+      if (state.transitionsZoneId === node.dataset.zoneDelete) {
+        el('transitions-panel').classList.add('hidden');
+        state.transitionsZoneId = '';
+      }
       notify('时区档案已删除', 'ok');
       await loadZones();
     } catch (err) {
@@ -307,7 +551,22 @@ document.addEventListener('click', async (event) => {
   }
 });
 
+// 例外行里切换“改期 / 停做”，只显示用得上的日期时刻
+document.addEventListener('change', (event) => {
+  if (event.target.classList && event.target.classList.contains('exc-mode')) {
+    const dates = event.target.closest('.exc-row').querySelector('.exc-dates');
+    if (dates) dates.classList.toggle('hidden', event.target.value === 'disabled');
+  }
+});
+
 el('zone-form').addEventListener('submit', submitZone);
+el('zone-uses-dst').addEventListener('change', syncDstFormVisibility);
+el('transitions-year').addEventListener('keydown', (event) => {
+  if (event.key === 'Enter') {
+    event.preventDefault();
+    runTransitions();
+  }
+});
 el('zone-new').addEventListener('click', () => {
   clearNotice();
   openZoneForm(null);
